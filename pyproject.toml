@@ -37,6 +37,12 @@ dependencies = [
 g4f = [
     "g4f==0.5.2.2",
 ]
+# 知识卡片信息图生成器（webui 知识卡片页面）所需：
+# 用无头浏览器把 HTML 版式渲染为 PNG，保证中文清晰、版式可控。
+# 安装：uv sync --extra playwright && python -m playwright install chromium
+playwright = [
+    "playwright==1.49.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

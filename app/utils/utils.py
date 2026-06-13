@@ -1,6 +1,7 @@
 import json
 import locale
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 import threading
@@ -10,6 +11,23 @@ from uuid import uuid4
 from loguru import logger
 
 from app.models import const
+
+
+def configure_console_utf8() -> None:
+    """Use UTF-8 for stdout/stderr on Windows so Chinese logs are not garbled."""
+    if sys.platform != "win32":
+        return
+
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 def get_response(status: int, data: Any = None, message: str = ""):
@@ -64,6 +82,9 @@ def get_uuid(remove_hyphen: bool = False):
 
 
 def root_dir():
+    # PyInstaller 冻结后：根目录用 exe 同级目录（resource/config/storage 用户可见可写）。
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 

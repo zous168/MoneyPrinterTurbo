@@ -1,0 +1,16 @@
+---
+description: MoneyPrinterTurbo 项目规则入口 — 正文唯一来源 .rules/
+alwaysApply: true
+---
+
+# 项目规则
+
+**唯一正文** → [`.rules/README.md`](../../.rules/README.md)
+
+开工前 Read → [`.rules/00-constitution-index.md`](../../.rules/00-constitution-index.md)（按任务类型选读 §0）。
+
+- 与用户、PR、方案说明：**一律中文**
+- `git commit` subject/body：**必须中文**；格式 `<type>: <中文 subject>`
+- 代码标识符 / API 路径：英文；注释：中文
+
+本目录 `.mdc` 仅为 Cursor 入口指针，不堆细则。

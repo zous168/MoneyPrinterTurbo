@@ -1,5 +1,7 @@
 @echo off
 setlocal
+chcp 65001 >nul 2>&1
+set "PYTHONUTF8=1"
 set "CURRENT_DIR=%CD%"
 echo ***** Current directory: %CURRENT_DIR% *****
 set "PYTHONPATH=%CURRENT_DIR%"

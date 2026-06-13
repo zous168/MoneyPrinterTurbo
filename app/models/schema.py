@@ -178,6 +178,42 @@ class VideoTermsParams:
     amount: Optional[int] = 5
 
 
+class KnowledgeCard(BaseModel):
+    """单张知识卡片的结构化内容（image_studio 步骤 3 的产物之一）。"""
+
+    number: int = 1
+    category: str = ""              # 分类标题，如「自由职业」
+    summary: str = ""              # 一句话概括
+    bullets: List[str] = Field(default_factory=list)  # 要点列表
+    illustration_prompt: str = ""  # 用于文生图的英文插画描述
+
+
+class KnowledgeContent(BaseModel):
+    """
+    填充进版式模板的完整知识数据（步骤 3 产物）。
+    既包含结构化生图参数（cards / sections），也包含主题知识文案（summary/bullets）。
+    """
+
+    title: str = ""
+    title_highlight: str = ""      # 标题中需要高亮的关键词
+    subtitle: str = ""
+    accent_color: str = "#2e7d32"
+    cards: List[KnowledgeCard] = Field(default_factory=list)
+    bottom_left: dict = Field(default_factory=dict)   # {title, items:[{label,desc}]}
+    bottom_right: dict = Field(default_factory=dict)  # {title, steps:[{label,desc}]}
+
+
+class ImageStudioRequest(BaseModel):
+    """WebUI / API 触发知识卡片生成的入参。"""
+
+    subject: str
+    template_image_path: str
+    extra_requirements: str = ""
+    image_provider: Optional[str] = None   # 覆盖 config.app.image_provider
+    generate_illustrations: bool = True
+    review_rounds: int = Field(default=1, ge=0, le=3)
+
+
 class BaseResponse(BaseModel):
     status: int = 200
     message: Optional[str] = "success"

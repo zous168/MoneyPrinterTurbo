@@ -176,6 +176,7 @@ def scroll_to_bottom():
 
 
 def init_log():
+    utils.configure_console_utf8()
     logger.remove()
     _lvl = "DEBUG"
 
@@ -653,28 +654,29 @@ with middle_panel:
             (tr("Sequential"), "sequential"),
             (tr("Random"), "random"),
         ]
-        video_sources = [
+        supported_video_sources = [
             (tr("Pexels"), "pexels"),
             (tr("Pixabay"), "pixabay"),
             (tr("Local file"), "local"),
-            (tr("TikTok"), "douyin"),
-            (tr("Bilibili"), "bilibili"),
-            (tr("Xiaohongshu"), "xiaohongshu"),
         ]
+        supported_source_values = [source for _, source in supported_video_sources]
 
         saved_video_source_name = config.app.get("video_source", "pexels")
-        saved_video_source_index = [v[1] for v in video_sources].index(
+        if saved_video_source_name not in supported_source_values:
+            saved_video_source_name = "pexels"
+        saved_video_source_index = supported_source_values.index(
             saved_video_source_name
         )
 
         selected_index = st.selectbox(
             tr("Video Source"),
-            options=range(len(video_sources)),
-            format_func=lambda x: video_sources[x][0],
+            options=range(len(supported_video_sources)),
+            format_func=lambda x: supported_video_sources[x][0],
             index=saved_video_source_index,
         )
-        params.video_source = video_sources[selected_index][1]
+        params.video_source = supported_video_sources[selected_index][1]
         config.app["video_source"] = params.video_source
+        st.caption(f"{tr('TikTok')} / {tr('Bilibili')} / {tr('Xiaohongshu')}")
 
         if params.video_source == "local":
             # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。

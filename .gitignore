@@ -27,8 +27,11 @@ node_modules
 venv/
 .venv
 
+# PyInstaller build output
+/dist/
+/build_pyi/
+
 # Debug and test files
-CLAUDE.md
 debug/
 debug_*.py
 test_*.py

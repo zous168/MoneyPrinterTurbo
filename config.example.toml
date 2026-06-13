@@ -47,6 +47,25 @@ pixabay_api_keys = []
 #   litellm     (100+ providers via LiteLLM gateway)
 llm_provider = "openai"
 
+########## 知识卡片信息图生成器（webui「知识卡片」页面）
+# 该功能复用上面的 llm_provider 做「图片反推提示词」与「内容审核」。
+# 注意：所选 provider 的模型必须支持视觉（多模态），例如 openai 的 gpt-4o、
+# gemini-2.5-flash、qwen-vl 等。
+# 如需让视觉单独使用与文本不同的 provider / 模型，可显式设置以下两项；留空则复用 llm_provider。
+# vision_provider = ""
+# vision_model_name = ""
+
+# 最终成品图里 12 张卡片插画的文生图后端：
+#   pollinations  —— 免 API key（注意：官方近期对图像接口收费，免费层可能返回 402）；
+#   openai        —— 复用上面 openai 兼容端点的 /images/generations，同一把 key 即可
+#                    出图（需把 openai_image_model 设为该端点支持的生图模型）；
+#   siliconflow   —— 使用下方 [siliconflow] 的 api_key，对中文主题更友好。
+image_provider = "pollinations"
+# pollinations 文生图模型（flux / turbo 等）
+pollinations_image_model = "flux"
+# image_provider = "openai" 时使用的生图模型，例如 flux-1-schnell / dall-e-3 / Kolors
+openai_image_model = ""
+
 ########## Pollinations AI Settings
 # Visit https://pollinations.ai/ to learn more
 # API Key is optional - leave empty for public access
@@ -282,6 +301,10 @@ speech_region = ""
 # SiliconFlow API Key
 # Get your API key at https://siliconflow.cn
 api_key = ""
+# 知识卡片插画文生图模型（image_provider = "siliconflow" 时生效）
+image_model_name = "Kwai-Kolors/Kolors"
+# 采样步数（步数越多越精细、越慢）
+image_steps = 20
 
 [ui]
 # UI related settings

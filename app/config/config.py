@@ -1,11 +1,16 @@
 import os
 import shutil
 import socket
+import sys
 
 import toml
 from loguru import logger
 
-root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+# PyInstaller 冻结后用 exe 同级目录，让 config.toml 用户可见可编辑。
+if getattr(sys, "frozen", False):
+    root_dir = os.path.dirname(sys.executable)
+else:
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 config_file = f"{root_dir}/config.toml"
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "kubepods", "libpod", "podman")
 _DOCKER_HOST_GATEWAY_NAME = "host.docker.internal"

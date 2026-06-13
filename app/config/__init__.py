@@ -8,6 +8,7 @@ from app.utils import utils
 
 
 def __init_logger():
+    utils.configure_console_utf8()
     # _log_file = utils.storage_dir("logs/server.log")
     _lvl = config.log_level
     root_dir = os.path.dirname(
