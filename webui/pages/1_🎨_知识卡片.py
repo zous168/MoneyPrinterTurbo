@@ -350,63 +350,51 @@ if st.session_state.get("ks_running") and st.session_state.get("ks_params"):
         status_box.write(f"**[{stage}]** {msg}")
 
     try:
-        out_dir = utils.storage_dir(os.path.join("image_studio", utils.get_uuid()), create=True)
+        # 断点续跑：复用上次任务目录（保留已落盘的中间结果）；否则新建目录。
+        _resume_dir = p.get("resume_dir")
+        if _resume_dir and os.path.isdir(_resume_dir):
+            out_dir = _resume_dir
+            cb("resume", f"断点续跑：复用目录 {out_dir}，跳过已完成步骤")
+        else:
+            out_dir = utils.storage_dir(os.path.join("image_studio", utils.get_uuid()), create=True)
         result["out_dir"] = out_dir
 
-        # 步骤2：反推模板结构
-        template = image_studio.reverse_template(p["template_path"], cb)
-        # 版式决策：跟随模板 / 自动按主题 / 强制宫格或步骤流程。
-        layout_choice = p.get("layout", "template")
-        if layout_choice == "auto":
-            template["layout_kind"] = image_studio.classify_layout_by_subject(p["subject"], cb)
-            cb("reverse", f"按主题智能判定版式：{template['layout_kind']}")
-        elif layout_choice in ("grid", "steps"):
-            template["layout_kind"] = layout_choice
-            cb("reverse", f"按用户指定版式：{layout_choice}")
-        # 数量优先级：用户手填 > 主题里写明的数量 > 模板反推值。
-        # （否则会出现“标题写12个、却只生成4张卡”这类不一致。）
-        if p.get("card_count"):
-            template["card_count"] = p["card_count"]
-            template["step_count"] = p["card_count"]
-            cb("reverse", f"按用户指定数量：{p['card_count']}")
-        else:
-            _n = image_studio.count_from_subject(p["subject"])
-            if _n and _n != template.get("card_count"):
-                template["card_count"] = _n
-                template["step_count"] = _n
-                cb("reverse", f"按主题中写明的数量：{_n}（覆盖模板反推值）")
+        # 步骤2：反推模板结构（带缓存的服务层 helper，续跑时复用 template.json）
+        template = image_studio.reverse_template_cached(
+            out_dir, p["template_path"], cb,
+            layout_choice=p.get("layout", "template"),
+            subject=p["subject"], card_count=int(p.get("card_count") or 0),
+        )
         result["template"] = template
         with live.expander("🧩 步骤2 · 模板结构反推", expanded=False):
             st.json(template)
 
-        # 步骤3：组织知识数据（按所选分镜比例让 LLM 组织内容与布局）
-        content = image_studio.generate_knowledge(
-            p["subject"], template, p["extra"], cb, aspect=p.get("scene_aspect", "9:16")
+        # 步骤3：组织知识数据（带缓存，续跑时复用 content.json）
+        content = image_studio.generate_knowledge_cached(
+            out_dir, p["subject"], template, p["extra"], cb,
+            aspect=p.get("scene_aspect", "9:16"),
         )
-        content["_grid_columns"] = template.get("grid_columns", 4)
         result["content"] = content
         with live.expander("📝 步骤3 · 知识数据", expanded=True):
             st.json(content)
 
-        # 步骤4：审核矫正
-        if p["review_rounds"] > 0:
-            content, review_log = image_studio.review_and_correct(
-                p["template_path"], p["subject"], content, template, p["review_rounds"], cb
-            )
-            content["_grid_columns"] = template.get("grid_columns", 4)
-            result["content"] = content
+        # 步骤4：审核矫正（带缓存，content 带 _reviewed 或 rounds=0 时跳过）
+        content, review_log = image_studio.review_and_correct_cached(
+            out_dir, p["template_path"], p["subject"], content, template,
+            p["review_rounds"], cb,
+        )
+        result["content"] = content
+        if review_log:
             result["review_log"] = review_log
             with live.expander("🔍 步骤4 · 审核日志", expanded=False):
                 st.json(review_log)
 
-        # 步骤4b：小红书种草文案（含关键词）
+        # 步骤4b：小红书种草文案（带缓存，续跑时复用 promo.json）
         if p.get("gen_promo"):
             try:
-                promo = image_studio.generate_promo_copy(p["subject"], content, cb)
+                promo = image_studio.generate_promo_copy_cached(out_dir, p["subject"], content, cb)
                 if promo.get("title") or promo.get("body"):
                     result["promo"] = promo
-                    with open(os.path.join(out_dir, "promo.json"), "w", encoding="utf-8") as f:
-                        json.dump(promo, f, ensure_ascii=False, indent=2)
                     with open(os.path.join(out_dir, "promo.md"), "w", encoding="utf-8") as f:
                         f.write(image_studio.promo_to_markdown(promo))
                     with live.expander("📣 步骤4b · 小红书种草文案", expanded=True):
@@ -497,6 +485,8 @@ if st.session_state.get("ks_running") and st.session_state.get("ks_params"):
     finally:
         st.session_state.ks_result = result
         st.session_state.ks_running = False
+        # 暂存本次参数，供失败后「断点续跑」复用（只换 resume_dir，跳过已完成步骤）。
+        st.session_state.ks_last_params = p
         st.session_state.ks_params = None
     st.rerun()
 
@@ -505,6 +495,19 @@ result = st.session_state.get("ks_result")
 if result:
     if result.get("error"):
         st.error(f"生成中断：{result['error']}")
+        # 断点续跑：复用上次目录与已完成步骤（反推/知识/审核/文案/已生成的插画），只补做失败部分。
+        _can_resume = (result.get("out_dir") and os.path.isdir(result["out_dir"])
+                       and st.session_state.get("ks_last_params") and not running)
+        if _can_resume and st.button(
+            "🔁 断点续跑（复用已完成步骤，只补做失败部分）",
+            type="primary", use_container_width=True,
+        ):
+            _rp = dict(st.session_state.ks_last_params)
+            _rp["resume_dir"] = result["out_dir"]
+            st.session_state.ks_params = _rp
+            st.session_state.ks_running = True
+            st.session_state.ks_result = None
+            st.rerun()
     if result.get("image") and os.path.exists(result["image"]):
         st.success("生成完成！")
 

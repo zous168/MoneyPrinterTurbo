@@ -198,7 +198,7 @@ def _build_content_prompt(subject: str, template: dict, extra: str, aspect: str 
 - 共需要 {card_count} 张知识卡片；
 - 每张卡片包含：分类标题、一句话概括、{bullets} 条要点；
 - 底部需要 {len(section_titles)} 个总结分区，分别对应：{', '.join(section_titles)}；
-- 内容必须真实、有信息量、可操作，符合中文表达习惯，简洁有力，避免空话套话。
+- 内容必须真实、可操作，**全部文字使用简体中文（严禁出现繁体字）**，符合中文表达习惯；**高度提炼、只放重点**，每个文字元素宁短勿长，不要把细节全堆到图上。
 {f'- 额外要求：{extra}' if extra.strip() else ''}
 
 每张卡片还要给出一段**英文插画描述**(illustration_prompt)，用于文生图，
@@ -219,10 +219,10 @@ col(起始列 1~{gcols})、row(起始行 1~{grows})、w(占几列)、h(占几行
 - "heading" —— 分类标题（渲染时自动带序号徽标）
 - "image" —— 该卡插画（每页必含一次）
 - "stat"(value,label) —— 数字/时间/比例超大突出
-- "statement"(text) —— 一句有力的话/金句/警示
-- "bullets"(items 2~3 条) —— 并列要点（写充实别太短）
-- "note"(text) —— 次要补充提示
-设计原则：内容充实不空洞；横向纵向都要利用起来；相邻卡片版面尽量不同；一眼能看懂。
+- "statement"(text) —— 一句有力的话/金句/警示（≤15字）
+- "bullets"(items 2~3 条) —— 并列要点，每条提炼成关键词短句（≤约12字），只点到重点，别写成整句长说明
+- "note"(text) —— 次要补充提示（一句即可）
+设计原则：**重点突出、文字精炼**——靠大字号、插画、留白把版面撑满，而不是堆砌文字；横向纵向都利用起来；相邻卡片版面尽量不同；一眼能看懂、不拥挤。
 （{orient}：{'宽 > 高，适合左右错落、图占一侧' if aspect != '9:16' else '高 > 宽，适合上下错落、纵向铺满'}）
 
 【标题】请先想 3 个**带钩子、去 AI 味**的标题候选（title_options），再从中选最好的一个作为主标题 title。
@@ -291,8 +291,8 @@ def _build_steps_prompt(subject: str, template: dict, extra: str) -> str:
 
 要求：
 - 拆成 {step_count} 个清晰的步骤，顺序合理、可直接照做；
-- 每个步骤包含：一个简短小标题(heading) + 一段具体说明文字(text，1~3句，真实可操作)；
-- 内容紧扣主题「{subject}」，符合中文表达习惯，简洁有力，避免空话。
+- 每个步骤包含：一个简短小标题(heading) + 一句精炼说明文字(text，1~2句、突出关键动作，别堆细节)；
+- 内容紧扣主题「{subject}」，**全部文字使用简体中文（严禁出现繁体字）**，符合中文表达习惯，简洁有力，避免空话。
 {f'- 额外要求：{extra}' if extra.strip() else ''}
 
 每个步骤还要给出一段**英文插画描述**(illustration_prompt)用于文生图，
@@ -823,25 +823,66 @@ def generate_card_illustrations(
     out_dir: str,
     provider: Optional[str] = None,
     cb: ProgressCb = None,
+    workers: Optional[int] = None,
 ) -> dict:
-    """为每张卡片/步骤生成插画，返回 {index: image_path}。失败项跳过（不阻断出图）。"""
+    """为每张卡片/步骤生成插画，返回 {index: image_path}。失败项跳过（不阻断出图）。
+
+    各插画相互独立，按 workers 路并发生成（默认取 config.app.illustration_concurrency，
+    缺省 4）；单张慢/超时不再拖累其余。已存在的直接复用（断点续跑）。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     os.makedirs(out_dir, exist_ok=True)
     illustrations = {}
     # 同时兼容宫格(cards)与步骤流程(steps)两种内容结构。
     items = content.get("cards") or content.get("steps") or []
+    total = len(items)
+
+    # 先扫一遍：已存在的直接复用，缺失/失败的收集成待生成任务并发处理。
+    todo = []  # [(idx, prompt, label, out_path), ...]
     for idx, item in enumerate(items):
         prompt = item.get("illustration_prompt") or item.get("category") or item.get("heading", "")
         if not prompt:
             continue
         label = item.get("category") or item.get("heading", "")
-        _notify(cb, "illustration", f"生成插画 {idx + 1}/{len(items)}：{label}")
         out_path = os.path.join(out_dir, f"item_{idx + 1}.png")
-        try:
-            # 1024 方图：清晰填充分镜/卡片；用端点支持的尺寸(512/1024)，768 等会被拒(400)。
-            image_gen.text_to_image(prompt, out_path, width=1024, height=1024, provider=provider)
+        # 断点续跑：已生成的插画直接复用，只补做缺失/失败的那几张，省时省 token。
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             illustrations[idx] = out_path
-        except Exception as e:
-            logger.warning(f"item {idx + 1} illustration failed, skip: {e}")
+            _notify(cb, "illustration", f"插画 {idx + 1}/{total} 已存在，复用：{label}")
+            continue
+        todo.append((idx, prompt, label, out_path))
+
+    if not todo:
+        return illustrations
+
+    if workers is None:
+        try:
+            workers = int(config.app.get("illustration_concurrency", 4))
+        except (TypeError, ValueError):
+            workers = 4
+    workers = max(1, min(workers, len(todo)))
+
+    def _one(task):
+        idx, prompt, label, out_path = task
+        # 1024 方图：清晰填充分镜/卡片；用端点支持的尺寸(512/1024)，768 等会被拒(400)。
+        image_gen.text_to_image(prompt, out_path, width=1024, height=1024, provider=provider)
+        return idx, out_path
+
+    _notify(cb, "illustration", f"并发生成 {len(todo)} 张插画（{workers} 路并行）…")
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_one, t): t for t in todo}
+        for fut in as_completed(futs):
+            idx, prompt, label, out_path = futs[fut]
+            done += 1
+            try:
+                _, saved = fut.result()
+                illustrations[idx] = saved
+                _notify(cb, "illustration", f"插画完成 {done}/{len(todo)}：{label}")
+            except Exception as e:
+                logger.warning(f"item {idx + 1} illustration failed, skip: {e}")
+                _notify(cb, "illustration", f"插画失败跳过 {done}/{len(todo)}：{label}（{e}）")
     return illustrations
 
 
@@ -1879,31 +1920,129 @@ def style_thumbnail(style: str, force: bool = False) -> str:
 # --------------------------------------------------------------------------- #
 # 主入口
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 断点续跑：各步骤的「带缓存」包装（WebUI 与 run_pipeline 共用同一套磁盘缓存约定）
+#
+# 约定：同一任务目录 out_dir 下，每步成功即把结果落盘——
+#   template.json（反推+版式/数量覆盖后）、content.json（生成知识后；审核后追加
+#   _reviewed=True 再重写）、promo.json（种草文案）、cards/item_N.png（插画，幂等）。
+# 续跑时这些 *_cached 包装先读缓存命中即跳过，只补未完成的步骤。
+# --------------------------------------------------------------------------- #
+def _load_json(path: str):
+    """读取 JSON，文件不存在或损坏返回 None（视作「该步未完成」）。"""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def reverse_template_cached(out_dir: str, template_image_path: str, cb: ProgressCb = None,
+                            layout_choice: str = "template", subject: str = "",
+                            card_count: int = 0) -> dict:
+    """反推模板（带缓存）。命中 out_dir/template.json 直接复用；否则反推并应用
+    版式（template/auto/grid/steps）与数量覆盖后落盘。"""
+    cache = os.path.join(out_dir, "template.json")
+    cached = _load_json(cache)
+    if cached is not None:
+        _notify(cb, "reverse", "复用已反推的模板结构（续跑）")
+        return cached
+    template = reverse_template(template_image_path, cb)
+    # 版式决策：跟随模板 / 自动按主题 / 强制宫格或步骤流程。
+    if layout_choice == "auto":
+        template["layout_kind"] = classify_layout_by_subject(subject, cb)
+        _notify(cb, "reverse", f"按主题智能判定版式：{template['layout_kind']}")
+    elif layout_choice in ("grid", "steps"):
+        template["layout_kind"] = layout_choice
+        _notify(cb, "reverse", f"按用户指定版式：{layout_choice}")
+    # 数量优先级：用户手填 > 主题里写明的数量 > 模板反推值。
+    if card_count:
+        template["card_count"] = card_count
+        template["step_count"] = card_count
+        _notify(cb, "reverse", f"按用户指定数量：{card_count}")
+    else:
+        _n = count_from_subject(subject)
+        if _n and _n != template.get("card_count"):
+            template["card_count"] = _n
+            template["step_count"] = _n
+            _notify(cb, "reverse", f"按主题中写明的数量：{_n}（覆盖模板反推值）")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(cache, "w", encoding="utf-8") as f:
+        json.dump(template, f, ensure_ascii=False, indent=2)
+    return template
+
+
+def generate_knowledge_cached(out_dir: str, subject: str, template: dict, extra: str = "",
+                              cb: ProgressCb = None, aspect: str = "9:16") -> dict:
+    """生成知识数据（带缓存）。命中 out_dir/content.json 直接复用。"""
+    cache = os.path.join(out_dir, "content.json")
+    cached = _load_json(cache)
+    if cached is not None:
+        _notify(cb, "knowledge", "复用已生成的知识数据（续跑）")
+        return cached
+    content = generate_knowledge(subject, template, extra, cb, aspect=aspect)
+    content["_grid_columns"] = template.get("grid_columns", 4)
+    os.makedirs(out_dir, exist_ok=True)
+    with open(cache, "w", encoding="utf-8") as f:
+        json.dump(content, f, ensure_ascii=False, indent=2)
+    return content
+
+
+def review_and_correct_cached(out_dir: str, template_image_path: str, subject: str,
+                              content: dict, template: dict, review_rounds: int = 1,
+                              cb: ProgressCb = None) -> tuple[dict, list]:
+    """审核矫正（带缓存）。content 已带 _reviewed 标记或 rounds<=0 则跳过；
+    否则审核后打标记并重写 content.json，续跑时不再重审。"""
+    if review_rounds <= 0 or content.get("_reviewed"):
+        return content, []
+    content, review_log = review_and_correct(
+        template_image_path, subject, content, template, review_rounds, cb
+    )
+    content["_grid_columns"] = template.get("grid_columns", 4)
+    content["_reviewed"] = True
+    with open(os.path.join(out_dir, "content.json"), "w", encoding="utf-8") as f:
+        json.dump(content, f, ensure_ascii=False, indent=2)
+    return content, review_log
+
+
+def generate_promo_copy_cached(out_dir: str, subject: str, content: dict = None,
+                               cb: ProgressCb = None) -> dict:
+    """种草文案（带缓存）。命中 out_dir/promo.json 直接复用；否则生成并落盘。"""
+    cache = os.path.join(out_dir, "promo.json")
+    cached = _load_json(cache)
+    if cached is not None:
+        _notify(cb, "promo", "复用已生成的种草文案（续跑）")
+        return cached
+    promo = generate_promo_copy(subject, content, cb)
+    if promo.get("title") or promo.get("body"):
+        os.makedirs(out_dir, exist_ok=True)
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump(promo, f, ensure_ascii=False, indent=2)
+    return promo
+
+
 def run_pipeline(req: ImageStudioRequest, cb: ProgressCb = None) -> dict:
     """
     完整执行 5 步 pipeline，返回结果字典：
       {task_id, template, content, review_log, illustrations, html, image}
+
+    断点续跑：req.task_id 留空则新建随机目录；传入已有 task_id 则复用其目录，
+    按已落盘的中间结果跳过已完成步骤、只补未完成的（与 WebUI 共用同一套缓存）。
     """
-    task_id = utils.get_uuid()
+    task_id = getattr(req, "task_id", None) or utils.get_uuid()
     out_dir = utils.storage_dir(os.path.join("image_studio", task_id), create=True)
     _notify(cb, "start", f"任务 {task_id} 开始")
 
-    template = reverse_template(req.template_image_path, cb)
-    _n = count_from_subject(req.subject)
-    if _n:
-        template["card_count"] = _n
-        template["step_count"] = _n
-    template_cols = template.get("grid_columns", 4)
-
-    content = generate_knowledge(req.subject, template, req.extra_requirements, cb)
-    content["_grid_columns"] = template_cols
-
-    review_log = []
-    if req.review_rounds > 0:
-        content, review_log = review_and_correct(
-            req.template_image_path, req.subject, content, template, req.review_rounds, cb
-        )
-        content["_grid_columns"] = template_cols
+    template = reverse_template_cached(out_dir, req.template_image_path, cb,
+                                       subject=req.subject)
+    content = generate_knowledge_cached(out_dir, req.subject, template,
+                                        req.extra_requirements, cb)
+    content, review_log = review_and_correct_cached(
+        out_dir, req.template_image_path, req.subject, content, template,
+        req.review_rounds, cb
+    )
 
     illustrations = {}
     if req.generate_illustrations:
@@ -1915,7 +2054,7 @@ def run_pipeline(req: ImageStudioRequest, cb: ProgressCb = None) -> dict:
     rendered = render(content, illustrations, out_dir, cb, style, getattr(req, "font", None),
                       template, None)
 
-    # 落盘内容数据，便于复用/调试。
+    # 落盘最终内容（审核版会带 _reviewed），便于复用/调试与续跑。
     with open(os.path.join(out_dir, "content.json"), "w", encoding="utf-8") as f:
         json.dump(content, f, ensure_ascii=False, indent=2)
 

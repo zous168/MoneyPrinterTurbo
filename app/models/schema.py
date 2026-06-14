@@ -212,6 +212,9 @@ class ImageStudioRequest(BaseModel):
     image_provider: Optional[str] = None   # 覆盖 config.app.image_provider
     generate_illustrations: bool = True
     review_rounds: int = Field(default=1, ge=0, le=3)
+    # 任务句柄：留空则新建随机目录；传入已有 task_id 则复用其目录、按已落盘的
+    # 中间结果（template.json/content.json/item_N.png）断点续跑，只补未完成的步骤。
+    task_id: Optional[str] = None
 
 
 class BaseResponse(BaseModel):

@@ -66,6 +66,10 @@ pollinations_image_model = "flux"
 # image_provider = "openai" 时使用的生图模型，例如 flux-1-schnell / dall-e-3 / Kolors
 openai_image_model = ""
 
+# 知识卡片插画并发生成路数：N 张插画相互独立，并发出图大幅缩短总耗时。
+# 后端不限流可调大（6~8）；若频繁 429 限流则调小（2~3）。默认 4。
+illustration_concurrency = 4
+
 ########## Pollinations AI Settings
 # Visit https://pollinations.ai/ to learn more
 # API Key is optional - leave empty for public access

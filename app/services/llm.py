@@ -77,7 +77,10 @@ def _generate_response(prompt: str) -> str:
     try:
         content = ""
         llm_provider = config.app.get("llm_provider", "openai")
-        logger.info(f"llm provider: {llm_provider}")
+        # 各 provider 的模型名统一按 {provider}_model_name 约定从 config 读取，
+        # 这里一并打印，便于日志里确认实际使用的是哪个模型（未配置则显示 (default)）。
+        _cfg_model = config.app.get(f"{llm_provider}_model_name", "") or "(default)"
+        logger.info(f"llm provider: {llm_provider}, model: {_cfg_model}")
         if llm_provider == "g4f":
             if not config.app.get("enable_g4f", False):
                 raise ValueError(

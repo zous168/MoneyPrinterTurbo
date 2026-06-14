@@ -43,6 +43,16 @@ def image_provider() -> str:
     return config.app.get("image_provider", "pollinations")
 
 
+def _model_for(provider: str) -> str:
+    """返回该生图后端实际使用的模型名（供日志显示）。"""
+    if provider == "siliconflow":
+        sf = getattr(config, "siliconflow", {}) or {}
+        return sf.get("image_model_name", "Kwai-Kolors/Kolors")
+    if provider in ("openai", "openai_compatible"):
+        return config.app.get("openai_image_model", "") or "(unset)"
+    return config.app.get("pollinations_image_model", "flux")
+
+
 def _save_bytes(data: bytes, out_path: str) -> str:
     with open(out_path, "wb") as f:
         f.write(data)
@@ -183,7 +193,8 @@ def text_to_image(
         except Exception as e:
             last_err = e
             logger.warning(
-                f"text_to_image failed (provider={provider}, attempt {attempt + 1}/{retries + 1}): {e}"
+                f"text_to_image failed (provider={provider}, model={_model_for(provider)}, "
+                f"attempt {attempt + 1}/{retries + 1}): {e}"
             )
             if attempt < retries:
                 time.sleep(1.5 * (attempt + 1))
