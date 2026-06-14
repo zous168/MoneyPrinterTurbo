@@ -428,7 +428,7 @@ if st.session_state.get("ks_running") and st.session_state.get("ks_params"):
         skin_path = None
         result["skin_path"] = skin_path
 
-        # 步骤5b：渲染成品图
+        # 步骤5b：渲染成品图（卡片一律由 LLM 生成自包含 HTML，见 image_studio.build_html）
         rendered = image_studio.render(content, illus, out_dir, cb, style=p.get("style"),
                                        font=p.get("font"), template=template, skin_path=skin_path)
         result["image"] = rendered["image"]
@@ -653,6 +653,9 @@ if result:
                     "template": result.get("template"), "skin_path": result.get("skin_path"),
                     "brand": result.get("brand", ""), "follow_text": result.get("follow_text", ""),
                     "qr_path": result.get("qr_path"),
+                    # 复用已生成的分镜图 HTML（同语言+同比例时视频直接拿来录制，不重复生成）
+                    "scene_html_dir": os.path.join(result["out_dir"], "scenes"),
+                    "scene_html_aspect": result.get("scene_aspect", "9:16"),
                 }
                 st.session_state.ks_videos = None
                 st.rerun()
@@ -671,6 +674,8 @@ if result:
                     template=vp.get("template"), skin_path=vp.get("skin_path"),
                     brand=vp.get("brand", ""), follow_text=vp.get("follow_text", ""),
                     qr_path=vp.get("qr_path"),
+                    scene_html_dir=vp.get("scene_html_dir"),
+                    scene_html_aspect=vp.get("scene_html_aspect"),
                 )
                 st.session_state.ks_videos = videos
                 vstatus.update(label="视频完成 ✅", state="complete", expanded=False)

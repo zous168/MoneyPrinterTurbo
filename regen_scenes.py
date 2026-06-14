@@ -30,7 +30,7 @@ out_dir = os.path.join(src, out_sub)
 paths = card_video.render_scene_images(
     content, illus, out_dir,
     style=content.get("_style"), aspect=content.get("_aspect", "9:16"), lang="zh",
-    brand="睡眠研究所",
+    brand="睡眠研究所", cb=lambda stage, msg: print(f"  [{stage}] {msg}"),
 )
 print(f"OK -> {out_dir}")
 for p in paths:

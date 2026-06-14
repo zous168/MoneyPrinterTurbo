@@ -1551,9 +1551,79 @@ LAYOUT_CHOICES = {
 }
 
 
+def _img_file_uri(path: str) -> str:
+    """本地图片的 file:// URI（给 LLM/无头浏览器直接用 src，不走 base64）。"""
+    return "file:///" + os.path.abspath(path).replace("\\", "/")
+
+
+def _build_cards_html_prompt(data: list, card_w: int) -> str:
+    return (
+        "你是信息卡片前端工程师。下面是一张海报里若干并列小卡片的数据，"
+        "请为**每一张**生成一段**自包含 HTML 片段**，用于拼进 CSS Grid 的格子。\n\n"
+        "硬性规则（必须全部遵守）：\n"
+        "1. 每张卡片是**单个根 <div>**，根样式含 height:100%;box-sizing:border-box;overflow:hidden;"
+        "display:flex;flex-direction:column;background:用数据给的 bg;border-radius:18px;padding:16px;"
+        "border-top:5px solid 数据的 accent。\n"
+        "2. **只用内联 style**：禁止 class、<style>、外部 CSS、<script>。\n"
+        "3. HTML 属性一律用**单引号**。\n"
+        f"4. 卡片宽约 {card_w}px、高度自动（同行等高）。字号：分类标题 21~23px、焦点句 16~17px、正文要点 14~15px、序号徽标 16px。\n"
+        "5. 配色**必须**用每条数据给的 accent / bg，不要自创。\n"
+        "6. **统一结构（每张完全一样，只换内容/主题色）**：① 顶部一行 = 序号圆形徽标(accent 底白字) + 分类标题(category，accent 色、手写体)；"
+        "② 若 img 非空，放一张方形插画；③ **焦点句** = summary，做成加粗、accent 色、第一眼重点（可加 accent 左边框）；"
+        "④ 要点 = bullets，每条前面一个 accent 小圆点，行距适中。\n"
+        "7. img：<img src='给定路径' style='width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;margin:8px 0'/>，"
+        "src **原样照抄**（含 file:/// 前缀）；img 为空则不放图、文字撑满。\n"
+        "8. 标题/焦点句用 font-family:'ZCOOL KuaiLe'；正文用 \"Microsoft YaHei\",sans-serif。\n"
+        "9. **所有卡片版式必须完全统一**；内容要**精炼到放得下**，bullets 最多 3~4 条、宁可精简也**绝不溢出/裁切**卡片。\n\n"
+        "数据(JSON 数组)：\n" + json.dumps(data, ensure_ascii=False) + "\n\n"
+        '**只返回 JSON**，格式：{"cards":["<div ...>...</div>", ...]}，'
+        "数组长度与顺序和输入一一对应。不要解释、不要 markdown 代码围栏。"
+    )
+
+
+def _llm_cards_html(cards: list, illustrations: dict, accent: str, palette,
+                    mono_bg: str, cols: int, cb: ProgressCb) -> list | None:
+    """让 LLM 为每张并列卡片生成自包含 HTML（内联样式、无 class、无外部 CSS）。
+    传入卡片数据 + 插画 file:// 路径，LLM 填充并返回 list[str]（与 cards 等长）。
+    任一环节失败返回 None，由 build_html 回退到结构化渲染（保证海报永远出得来）。"""
+    n = len(cards)
+    if not n:
+        return None
+    card_w = round((1080 - 72 - (cols - 1) * 18) / cols)  # 海报内容宽≈1008，按列均分
+    data = []
+    for idx, c in enumerate(cards):
+        bg, c_accent = (mono_bg, accent) if not palette else palette[idx % len(palette)]
+        img = illustrations.get(idx)
+        data.append({
+            "number": c.get("number", idx + 1),
+            "category": c.get("category", ""),
+            "summary": c.get("summary", ""),
+            "bullets": list(c.get("bullets", [])),
+            "accent": readable_accent(c_accent),
+            "bg": bg,
+            "img": _img_file_uri(img) if img and os.path.exists(img) else "",
+        })
+    prompt = _build_cards_html_prompt(data, card_w)
+    for attempt in range(3):  # 卡片必须 LLM 生成，解析/数量不符就重试，尽量不退化
+        try:
+            raw = _generate_text_with_retry(prompt, cb)
+            obj = raw if isinstance(raw, dict) else vision._parse_json(raw)
+            html = obj.get("cards") if isinstance(obj, dict) else None
+            if isinstance(html, list) and len(html) == n:
+                out = [str(h).strip() for h in html]
+                if all(h.startswith("<") for h in out):
+                    return out
+            _notify(cb, "render", f"LLM 卡片 HTML 不合规，重试（{attempt + 1}/3）…")
+        except Exception as e:
+            _notify(cb, "render", f"LLM 卡片 HTML 生成出错，重试（{attempt + 1}/3）：{e}")
+    _notify(cb, "render", "LLM 卡片 HTML 多次失败，临时回退结构化渲染（兜底防空白）")
+    return None
+
+
 def build_html(content: dict, illustrations: dict, style: str | None = None,
                font: str | None = None, template: dict | None = None,
-               skin_path: str | None = None) -> str:
+               skin_path: str | None = None, cb: ProgressCb = None,
+               llm_cards: bool = True) -> str:
     # 按版式分流：步骤流程 → 竖向步骤渲染；其余 → 宫格卡片渲染。
     if content.get("_layout") == "steps" or (content.get("steps") and not content.get("cards")):
         return _steps_html(content, illustrations, style, font, template, skin_path)
@@ -1570,9 +1640,21 @@ def build_html(content: dict, illustrations: dict, style: str | None = None,
     title_html = _highlight_title(content.get("title", ""), content.get("title_highlight", ""), accent)
     subtitle = content.get("subtitle", "")
     cards = content.get("cards", [])
+    cols = max(2, min(4, content.get("_grid_columns", 4)))
+
+    # 卡片一律由 LLM 生成自包含 HTML（内联样式、无全局 CSS）——这是唯一正式路径。
+    # 仅 llm_cards=False（如 style_thumbnail 缩略图预览）才走下面的结构化模板。
+    # 极端情况下 LLM 多次失败才回退结构化兜底，避免成品图全空白。
+    llm_html = None
+    if llm_cards and cards:
+        llm_html = _llm_cards_html(cards, illustrations, accent, palette,
+                                   spec.get("mono_bg", "#ffffff"), cols, cb)
 
     card_blocks = []
     for idx, card in enumerate(cards):
+        if llm_html is not None:
+            card_blocks.append(llm_html[idx])
+            continue
         if palette:
             bg, c_accent = palette[idx % len(palette)]
         else:
@@ -1620,7 +1702,6 @@ def build_html(content: dict, illustrations: dict, style: str | None = None,
     if bl or br:
         bottom_html = f'<div class="bottom">{bl}{br}</div>'
 
-    cols = max(2, min(4, content.get("_grid_columns", 4)))
     css = spec["css"](accent, cols)
 
     sun = '<span class="sun">☀️</span>' if deco.get("sun") else ""
@@ -1746,7 +1827,7 @@ def render(content: dict, illustrations: dict, out_dir: str, cb: ProgressCb = No
            template: dict | None = None, skin_path: str | None = None) -> dict:
     """步骤 5b：构建 HTML 并截图为 PNG。返回 {'html': path, 'image': path}。"""
     os.makedirs(out_dir, exist_ok=True)
-    html = build_html(content, illustrations, style, font, template, skin_path)
+    html = build_html(content, illustrations, style, font, template, skin_path, cb)
     html_path = os.path.join(out_dir, "infographic.html")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1787,7 +1868,7 @@ def style_thumbnail(style: str, force: bool = False) -> str:
     out = os.path.join(thumb_dir, f"{style}.png")
     if os.path.exists(out) and not force:
         return out
-    html = build_html(_THUMB_SAMPLE, {}, style)
+    html = build_html(_THUMB_SAMPLE, {}, style, llm_cards=False)  # 缩略图用结构化模板，不调 LLM
     html_path = os.path.join(thumb_dir, f"{style}.html")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
